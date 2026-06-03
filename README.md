@@ -123,7 +123,7 @@ finance-analyzer/
 
 ---
 
-## 🎓 Viva Preparation & Architecture Notes
+## Architecture Notes & FAQs
 
 - **Why Flask and not Express?** Flask is lightweight and seamlessly integrates with Python's powerful Machine Learning libraries (Scikit-learn, Pandas) which we use for expense prediction.
 - **How does the ML work?** The app fetches historical `out` transactions, groups them by month, extracts features (like days in month, transaction count, season), and uses a `RandomForestRegressor` to predict the next month's total spend.
