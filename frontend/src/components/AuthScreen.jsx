@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, TextField, Button, 
-  CircularProgress, Alert, Link, Divider 
+  CircularProgress, Alert, Link, Divider, InputAdornment, IconButton 
 } from '@mui/material';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import PersonAddOutlinedIcon from '@mui/icons-material/PersonAddOutlined';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
-import { loginUser, registerUser, resetPassword } from '../services/api';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { loginUser, registerUser, resetPassword, sendOtp, verifyLogin, resendOtp } from '../services/api';
+import ReCAPTCHA from 'react-google-recaptcha';
 
 const AuthScreen = ({ onLogin }) => {
   // 'login', 'register', or 'reset'
@@ -19,7 +22,15 @@ const AuthScreen = ({ onLogin }) => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [pin, setPin] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const isValidPassword = (pwd) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/.test(pwd);
+
+  // OTP and CAPTCHA states
+  const [otp, setOtp] = useState('');
+  const [isOtpSent, setIsOtpSent] = useState(false);
+  const [recaptchaToken, setRecaptchaToken] = useState(null);
+  const recaptchaRef = React.useRef(null);
 
   const clearMessages = () => {
     setError('');
@@ -33,26 +44,47 @@ const AuthScreen = ({ onLogin }) => {
 
     try {
       if (view === 'login') {
-        const res = await loginUser({ email, password });
-        onLogin(res.user);
+        if (!isOtpSent) {
+          if (!recaptchaToken) { setError('Please complete the reCAPTCHA'); setLoading(false); return; }
+          const res = await loginUser({ email, password, recaptcha_token: recaptchaToken });
+          setSuccess(res.message);
+          setIsOtpSent(true);
+        } else {
+          const res = await verifyLogin({ email, otp });
+          onLogin(res.user);
+        }
       } else if (view === 'register') {
-        if (pin.length !== 4) {
-          setError('Security pin must be exactly 4 digits.');
-          setLoading(false);
-          return;
+        if (!isOtpSent) {
+          if (!isValidPassword(password)) {
+            setError('Password must be at least 8 characters long, contain an uppercase letter, a number, and a special character.');
+            setLoading(false);
+            return;
+          }
+          if (!recaptchaToken) { setError('Please complete the reCAPTCHA'); setLoading(false); return; }
+          const res = await sendOtp({ email, recaptcha_token: recaptchaToken });
+          setSuccess(res.message);
+          setIsOtpSent(true);
+        } else {
+          await registerUser({ name, email, password, otp });
+          setSuccess('Registration successful! Please login.');
+          toggleView('login');
         }
-        await registerUser({ name, email, password, security_pin: pin });
-        setSuccess('Registration successful! Please login.');
-        setView('login');
       } else if (view === 'reset') {
-        if (pin.length !== 4) {
-          setError('Security pin must be exactly 4 digits.');
-          setLoading(false);
-          return;
+        if (!isOtpSent) {
+          if (!isValidPassword(password)) {
+            setError('Password must be at least 8 characters long, contain an uppercase letter, a number, and a special character.');
+            setLoading(false);
+            return;
+          }
+          if (!recaptchaToken) { setError('Please complete the reCAPTCHA'); setLoading(false); return; }
+          const res = await sendOtp({ email, recaptcha_token: recaptchaToken });
+          setSuccess(res.message);
+          setIsOtpSent(true);
+        } else {
+          await resetPassword({ email, otp, new_password: password });
+          setSuccess('Password reset successfully! Please login with your new password.');
+          toggleView('login');
         }
-        await resetPassword({ email, security_pin: pin, new_password: password });
-        setSuccess('Password reset successfully! Please login with your new password.');
-        setView('login');
       }
     } catch (err) {
       setError(err.response?.data?.error || 'An error occurred. Please try again.');
@@ -61,11 +93,35 @@ const AuthScreen = ({ onLogin }) => {
     }
   };
 
+  const handleResendOtp = async () => {
+    clearMessages();
+    setLoading(true);
+    try {
+      await resendOtp({ email });
+      setSuccess('OTP has been resent to your email.');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to resend OTP. You might need to refresh and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleWrongEmail = () => {
+    setIsOtpSent(false);
+    setOtp('');
+    setRecaptchaToken(null);
+    if(recaptchaRef.current) recaptchaRef.current.reset();
+  };
+
   const toggleView = (newView) => {
     clearMessages();
     setView(newView);
     setPassword('');
-    setPin('');
+    setShowPassword(false);
+    setOtp('');
+    setIsOtpSent(false);
+    setRecaptchaToken(null);
+    if(recaptchaRef.current) recaptchaRef.current.reset();
   };
 
   return (
@@ -104,7 +160,7 @@ const AuthScreen = ({ onLogin }) => {
             <Typography variant="body2" color="text.secondary" textAlign="center" mt={1}>
               {view === 'login' && 'Sign in to access your AI financial dashboard'}
               {view === 'register' && 'Start tracking and forecasting your expenses'}
-              {view === 'reset' && 'Enter your email and 4-digit security pin'}
+              {view === 'reset' && 'Enter your email to reset your password'}
             </Typography>
           </Box>
 
@@ -113,7 +169,7 @@ const AuthScreen = ({ onLogin }) => {
 
           <form onSubmit={handleSubmit}>
             <Box display="flex" flexDirection="column" gap={2}>
-              {view === 'register' && (
+              {!isOtpSent && view === 'register' && (
                 <TextField 
                   label="Full Name" 
                   variant="outlined" 
@@ -124,52 +180,108 @@ const AuthScreen = ({ onLogin }) => {
                 />
               )}
               
-              <TextField 
-                label="Email Address" 
-                type="email" 
-                variant="outlined" 
-                fullWidth 
-                required 
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+              {!isOtpSent && (
+                <TextField 
+                  label="Email Address" 
+                  type="email" 
+                  variant="outlined" 
+                  fullWidth 
+                  required 
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value.toLowerCase())}
+                />
+              )}
 
-              {view !== 'reset' && (
+              {!isOtpSent && view !== 'reset' && (
                 <TextField 
                   label="Password" 
-                  type="password" 
+                  type={showPassword ? 'text' : 'password'}
                   variant="outlined" 
                   fullWidth 
                   required 
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    )
+                  }}
                 />
               )}
 
-              {view === 'reset' && (
+              {!isOtpSent && view === 'reset' && (
                 <TextField 
                   label="New Password" 
-                  type="password" 
+                  type={showPassword ? 'text' : 'password'}
                   variant="outlined" 
                   fullWidth 
                   required 
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton onClick={() => setShowPassword(!showPassword)} edge="end">
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    )
+                  }}
                 />
               )}
 
-              {(view === 'register' || view === 'reset') && (
-                <TextField 
-                  label="4-Digit Security Pin" 
-                  type="text" 
-                  inputProps={{ maxLength: 4, inputMode: 'numeric', pattern: '[0-9]*' }}
-                  variant="outlined" 
-                  fullWidth 
-                  required 
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
-                  helperText={view === 'register' ? "Save this pin! You need it to reset your password." : ""}
-                />
+              {!isOtpSent && (view === 'register' || view === 'reset') && (
+                <Box sx={{ mt: -1, mb: 1, px: 1 }}>
+                  <Typography variant="caption" color={password.length >= 8 ? "success.main" : "text.secondary"} display="block">
+                    {password.length >= 8 ? '✓' : '○'} At least 8 characters
+                  </Typography>
+                  <Typography variant="caption" color={/[A-Z]/.test(password) ? "success.main" : "text.secondary"} display="block">
+                    {/[A-Z]/.test(password) ? '✓' : '○'} At least 1 uppercase letter
+                  </Typography>
+                  <Typography variant="caption" color={/\d/.test(password) ? "success.main" : "text.secondary"} display="block">
+                    {/\d/.test(password) ? '✓' : '○'} At least 1 number
+                  </Typography>
+                  <Typography variant="caption" color={/[@$!%*?&]/.test(password) ? "success.main" : "text.secondary"} display="block">
+                    {/[@$!%*?&]/.test(password) ? '✓' : '○'} At least 1 special character (@$!%*?&)
+                  </Typography>
+                </Box>
+              )}
+
+              {!isOtpSent && (
+                <Box display="flex" justifyContent="center" my={1}>
+                  <ReCAPTCHA
+                    sitekey="6LeC5yYtAAAAABJaEI51La_XOFlEa9WHWK6S4Bjd"
+                    onChange={(token) => setRecaptchaToken(token)}
+                    ref={recaptchaRef}
+                    theme="dark"
+                  />
+                </Box>
+              )}
+
+              {isOtpSent && (
+                <Box>
+                  <TextField 
+                    label="Enter 6-Digit OTP" 
+                    variant="outlined" 
+                    fullWidth 
+                    required 
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    helperText="Please check your email for the OTP"
+                  />
+                  <Box display="flex" justifyContent="space-between" mt={1}>
+                    <Link component="button" type="button" variant="caption" onClick={handleWrongEmail} underline="hover" disabled={loading}>
+                      Wrong email? Correct it here
+                    </Link>
+                    <Link component="button" type="button" variant="caption" onClick={handleResendOtp} underline="hover" disabled={loading}>
+                      Didn't receive code? Resend OTP
+                    </Link>
+                  </Box>
+                </Box>
               )}
 
               <Button 
@@ -186,6 +298,7 @@ const AuthScreen = ({ onLogin }) => {
                 }}
               >
                 {loading ? <CircularProgress size={24} color="inherit" /> : 
+                 isOtpSent ? 'Verify OTP' :
                  view === 'login' ? 'Sign In' : 
                  view === 'register' ? 'Register' : 'Reset Password'}
               </Button>

@@ -28,7 +28,6 @@ def fix_db():
         name VARCHAR(100) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        security_pin VARCHAR(4) NOT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     );
 
@@ -60,8 +59,8 @@ def fix_db():
     ('Other Transaction', 'out'),
     ('Other Transaction', 'in') ON CONFLICT DO NOTHING;
 
-    INSERT INTO users (name, email, password_hash, security_pin) VALUES 
-    ('Demo User', 'demo@finance.com', 'scrypt:32768:8:1$dummyhash$dummy', '1234') ON CONFLICT DO NOTHING;
+    INSERT INTO users (name, email, password_hash) VALUES 
+    ('Demo User', 'demo@finance.com', 'scrypt:32768:8:1$dummyhash$dummy') ON CONFLICT DO NOTHING;
     """
     
     cur.execute(sql)

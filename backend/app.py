@@ -2,8 +2,17 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from db import get_connection
 from model import predict_expense
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
+import random
+import smtplib
+from email.mime.text import MIMEText
+import requests
+from dotenv import load_dotenv
+import re
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Allow all origins for development
@@ -17,6 +26,93 @@ def home():
     return jsonify({"status": "Finance Analyzer API running"})
 
 # ── Authentication ───────────────────────────────────────────────────────────
+
+OTP_STORE = {}
+
+def send_email(to_email, subject, body):
+    sender_email = os.getenv("SMTP_EMAIL")
+    sender_password = os.getenv("SMTP_APP_PASSWORD")
+    if not sender_email or not sender_password or "your_email" in sender_email:
+        print("SMTP Credentials not configured. Simulated OTP sent to console.")
+        return True
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = f"Finance Analyzer <{sender_email}>"
+        msg['To'] = to_email
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+        return False
+
+def verify_recaptcha(token):
+    secret = os.getenv("RECAPTCHA_SECRET_KEY")
+    if not secret:
+        print("reCAPTCHA secret not configured, skipping validation.")
+        return True
+    try:
+        response = requests.post("https://www.google.com/recaptcha/api/siteverify", data={
+            "secret": secret,
+            "response": token
+        })
+        return response.json().get("success", False)
+    except Exception as e:
+        print(f"reCAPTCHA error: {e}")
+        return False
+
+@app.route("/api/auth/send-otp", methods=["POST"])
+def send_otp():
+    try:
+        data = request.get_json(force=True)
+        email = data.get("email", "").strip()
+        recaptcha_token = data.get("recaptcha_token", "")
+        
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+            
+        if not recaptcha_token or not verify_recaptcha(recaptcha_token):
+            return jsonify({"error": "Invalid reCAPTCHA"}), 400
+
+        otp = str(random.randint(100000, 999999))
+        
+        OTP_STORE[email] = {
+            "otp": otp,
+            "expires": datetime.now() + timedelta(minutes=5)
+        }
+        
+        print(f"--- OTP FOR {email}: {otp} ---")
+        
+        send_email(email, "Your Finance Analyzer OTP", f"Your OTP is: {otp}\nIt is valid for 5 minutes.")
+        
+        return jsonify({"message": "OTP sent successfully"}), 200
+    except Exception as e:
+        return db_error(e)
+
+@app.route("/api/auth/resend-otp", methods=["POST"])
+def resend_otp():
+    try:
+        data = request.get_json(force=True)
+        email = data.get("email", "").strip()
+        
+        if email not in OTP_STORE:
+            return jsonify({"error": "No pending OTP request found. Please go back and try again."}), 400
+            
+        otp = str(random.randint(100000, 999999))
+        OTP_STORE[email] = {
+            "otp": otp,
+            "expires": datetime.now() + timedelta(minutes=5)
+        }
+        
+        print(f"--- RESEND OTP FOR {email}: {otp} ---")
+        send_email(email, "Your Finance Analyzer OTP (Resent)", f"Your new OTP is: {otp}\nIt is valid for 5 minutes.")
+        
+        return jsonify({"message": "OTP resent successfully"}), 200
+    except Exception as e:
+        return db_error(e)
+
 @app.route("/api/auth/register", methods=["POST"])
 def register():
     conn = None
@@ -27,13 +123,21 @@ def register():
         email = data.get("email", "").strip()
         password = data.get("password", "")
         pin = data.get("security_pin", "").strip()
+        otp = data.get("otp", "").strip()
 
-        if not name or not email or not password or not pin:
+        if not name or not email or not password or not otp:
             return jsonify({"error": "All fields are required"}), 400
+            
+        if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$", password):
+            return jsonify({"error": "Password must be at least 8 characters long, contain an uppercase letter, a number, and a special character."}), 400
+            
+        if email not in OTP_STORE or OTP_STORE[email]["otp"] != otp:
+            return jsonify({"error": "Invalid or expired OTP"}), 400
+            
+        if datetime.now() > OTP_STORE[email]["expires"]:
+            del OTP_STORE[email]
+            return jsonify({"error": "OTP has expired"}), 400
         
-        if len(pin) != 4 or not pin.isdigit():
-            return jsonify({"error": "Security Pin must be 4 digits"}), 400
-
         conn = get_connection()
         cur = conn.cursor()
         
@@ -44,12 +148,15 @@ def register():
 
         hashed_pw = generate_password_hash(password)
         cur.execute(
-            "INSERT INTO users (name, email, password_hash, security_pin) VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, email, hashed_pw, pin)
+            "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s) RETURNING id",
+            (name, email, hashed_pw)
         )
         new_id = cur.fetchone()[0]
         conn.commit()
         
+        # Clear OTP after successful registration
+        del OTP_STORE[email]
+
         return jsonify({"message": "Registration successful", "user_id": new_id, "name": name, "email": email}), 201
     except Exception as e:
         return db_error(e)
@@ -65,6 +172,10 @@ def login():
         data = request.get_json(force=True)
         email = data.get("email", "").strip()
         password = data.get("password", "")
+        recaptcha_token = data.get("recaptcha_token", "")
+
+        if not recaptcha_token or not verify_recaptcha(recaptcha_token):
+            return jsonify({"error": "Invalid reCAPTCHA"}), 400
 
         conn = get_connection()
         cur = conn.cursor()
@@ -76,6 +187,46 @@ def login():
         if not user or not check_password_hash(user[2], password):
             return jsonify({"error": "Invalid email or password"}), 401
             
+        # Generate OTP
+        otp = str(random.randint(100000, 999999))
+        OTP_STORE[email] = {
+            "otp": otp,
+            "expires": datetime.now() + timedelta(minutes=5)
+        }
+        
+        print(f"--- LOGIN OTP FOR {email}: {otp} ---")
+        send_email(email, "Login OTP - Finance Analyzer", f"Your login OTP is: {otp}\nIt is valid for 5 minutes.")
+            
+        return jsonify({"message": "OTP sent", "email": email}), 200
+    except Exception as e:
+        return db_error(e)
+
+@app.route("/api/auth/verify-login", methods=["POST"])
+def verify_login():
+    try:
+        data = request.get_json(force=True)
+        email = data.get("email", "").strip()
+        otp = data.get("otp", "").strip()
+        
+        if email not in OTP_STORE or OTP_STORE[email]["otp"] != otp:
+            return jsonify({"error": "Invalid or expired OTP"}), 401
+            
+        if datetime.now() > OTP_STORE[email]["expires"]:
+            del OTP_STORE[email]
+            return jsonify({"error": "OTP has expired"}), 401
+            
+        del OTP_STORE[email]
+        
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+            
         return jsonify({"message": "Login successful", "user": {"id": user[0], "name": user[1], "email": email}}), 200
     except Exception as e:
         return db_error(e)
@@ -85,19 +236,35 @@ def reset_password():
     try:
         data = request.get_json(force=True)
         email = data.get("email", "").strip()
-        pin = data.get("security_pin", "").strip()
+        otp = data.get("otp", "").strip()
         new_password = data.get("new_password", "")
+
+        if not email or not otp or not new_password:
+            return jsonify({"error": "All fields are required"}), 400
+
+        if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$", new_password):
+            return jsonify({"error": "Password must be at least 8 characters long, contain an uppercase letter, a number, and a special character."}), 400
+
+        if email not in OTP_STORE or OTP_STORE[email]["otp"] != otp:
+            return jsonify({"error": "Invalid or expired OTP"}), 401
+            
+        if datetime.now() > OTP_STORE[email]["expires"]:
+            del OTP_STORE[email]
+            return jsonify({"error": "OTP has expired"}), 401
 
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email = %s AND security_pin = %s", (email, pin))
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
         user = cur.fetchone()
 
         if not user:
             cur.close()
             conn.close()
-            return jsonify({"error": "Invalid email or security pin"}), 401
+            return jsonify({"error": "User not found"}), 404
 
+        # valid OTP and User, reset password
+        del OTP_STORE[email]
+        
         hashed_pw = generate_password_hash(new_password)
         cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hashed_pw, user[0]))
         conn.commit()

@@ -59,3 +59,18 @@ export const resetPassword = async (data) => {
   const response = await api.post('/auth/reset-password', data);
   return response.data;
 };
+
+export const sendOtp = async (data) => {
+  const response = await api.post('/auth/send-otp', data);
+  return response.data;
+};
+
+export const verifyLogin = async (data) => {
+  const response = await api.post('/auth/verify-login', data);
+  return response.data;
+};
+
+export const resendOtp = async (data) => {
+  const response = await api.post('/auth/resend-otp', data);
+  return response.data;
+};

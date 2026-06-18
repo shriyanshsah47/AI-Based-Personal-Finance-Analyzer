@@ -68,6 +68,13 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('finance_user');
     setUser(null);
+    setTransactions([]);
+    setSummary(null);
+    setInsights(null);
+    setPrediction(null);
+    setCategories([]);
+    setSelectedMonth(null);
+    setError('');
   };
 
   if (!user) {
@@ -131,7 +138,7 @@ function App() {
           {/* Right Column */}
           <Grid item xs={12} md={8} sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <SummaryPanel summary={summary} prediction={prediction} />
-            <TransactionList transactions={transactions} onTransactionDeleted={fetchData} selectedMonth={selectedMonth} onClearMonth={() => setSelectedMonth(null)} />
+            <TransactionList transactions={transactions} user={user} onTransactionDeleted={fetchData} selectedMonth={selectedMonth} onClearMonth={() => setSelectedMonth(null)} />
             <SpendingChart transactions={transactions} selectedMonth={selectedMonth} onMonthClick={setSelectedMonth} />
           </Grid>
 

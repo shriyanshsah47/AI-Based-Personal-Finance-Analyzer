@@ -11,8 +11,7 @@ import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
 import { deleteTransaction } from '../services/api';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-
-const TransactionList = ({ transactions, onTransactionDeleted, selectedMonth, onClearMonth }) => {
+const TransactionList = ({ transactions, user, onTransactionDeleted, selectedMonth, onClearMonth }) => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(5);
   const [searchTerm, setSearchTerm] = useState('');
@@ -57,39 +56,137 @@ const TransactionList = ({ transactions, onTransactionDeleted, selectedMonth, on
       return matchesStart && matchesEnd;
     });
 
-    // Add Title
-    doc.setFontSize(18);
-    doc.text("Finance Analyzer - Transaction Report", 14, 15);
+    const formatDateStr = (dateStr) => {
+      if (!dateStr) return '';
+      const [y, m, d] = dateStr.split('-');
+      return `${d}-${m}-${y}`;
+    };
+
+    // Calculate Summary Stats
+    let totalIncome = 0;
+    let totalExpense = 0;
+    const categoryTotals = {};
+
+    pdfFiltered.forEach(t => {
+      const amt = parseFloat(t.amount);
+      const catName = t.category === 'Other Transaction' ? t.custom_category : t.category;
+      
+      if (t.type === 'in') totalIncome += amt;
+      else if (t.type === 'out') {
+        totalExpense += amt;
+        categoryTotals[catName] = (categoryTotals[catName] || 0) + amt;
+      }
+    });
+    const netBalance = totalIncome - totalExpense;
+
+    // Header & Branding
+    doc.setFontSize(22);
+    doc.setTextColor(108, 99, 255); // primary color
+    doc.text("Finance Analyzer", 14, 20);
     
-    // Add Subtitle / Date Range
+    doc.setFontSize(14);
+    doc.setTextColor(40);
+    doc.text("Financial Report", 14, 28);
+    
+    // User Context & Date Range
     doc.setFontSize(10);
     doc.setTextColor(100);
-    const rangeText = (pdfStartDate || pdfEndDate) 
-      ? `Date Range: ${pdfStartDate || 'Beginning'} to ${pdfEndDate || 'Today'}`
-      : "Date Range: All Time";
-    doc.text(rangeText, 14, 22);
+    doc.text(`Account: ${user?.name || 'User'} (${user?.email || 'N/A'})`, 14, 38);
     
+    const rangeText = (pdfStartDate || pdfEndDate) 
+      ? `Date Range: ${pdfStartDate ? formatDateStr(pdfStartDate) : 'Beginning'} to ${pdfEndDate ? formatDateStr(pdfEndDate) : 'Today'}`
+      : "Date Range: All Time";
+    doc.text(rangeText, 14, 43);
+    
+    const today = new Date();
+    const formattedToday = `${String(today.getDate()).padStart(2, '0')}-${String(today.getMonth() + 1).padStart(2, '0')}-${today.getFullYear()}`;
+    doc.text(`Generated on: ${formattedToday}`, 14, 48);
+
+    let startY = 60;
+
+    // Category Breakdown - Top Right
+    const catKeys = Object.keys(categoryTotals).sort((a, b) => categoryTotals[b] - categoryTotals[a]);
+    if (catKeys.length > 0) {
+      const catData = catKeys.map(cat => [cat, `Rs.${categoryTotals[cat].toLocaleString('en-IN', { minimumFractionDigits: 2 })}`]);
+      
+      autoTable(doc, {
+        startY: 35,
+        head: [['Expense Breakdown', 'Amount']],
+        body: catData,
+        theme: 'plain',
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [240, 240, 245], textColor: 40, fontStyle: 'bold', halign: 'center' },
+        columnStyles: { 0: { halign: 'center' }, 1: { halign: 'center' } },
+        margin: { left: 120, right: 14 }, // Render on the right side
+      });
+      // Ensure the main table starts below the category table if it's long
+      if (doc.lastAutoTable.finalY + 15 > startY) {
+        startY = doc.lastAutoTable.finalY + 15;
+      }
+    }
+
+    // Summary Statistics - Left side (under generated on)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    
+    doc.setTextColor(0, 200, 83); // Green for income
+    doc.text(`Total Income: +Rs.${totalIncome.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, 14, 60);
+    
+    doc.setTextColor(255, 61, 0); // Red for expense
+    doc.text(`Total Expense: -Rs.${totalExpense.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, 14, 65);
+    
+    doc.setTextColor(netBalance >= 0 ? 0 : 255, netBalance >= 0 ? 200 : 61, netBalance >= 0 ? 83 : 0);
+    doc.text(`Net Balance: ${netBalance >= 0 ? '+' : '-'}Rs.${Math.abs(netBalance).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, 14, 70);
+    
+    doc.setFont('helvetica', 'normal');
+
+    startY = Math.max(startY, 85);
+
     // Format Table Data
+    doc.setFontSize(12);
+    doc.setTextColor(40);
+    doc.text("Transaction History", 14, startY);
+
     const tableData = pdfFiltered.map(t => [
-      t.date,
+      formatDateStr(t.date),
       t.category === 'Other Transaction' ? t.custom_category : t.category,
       t.notes || '-',
       t.type.toUpperCase(),
-      `${t.type === 'in' ? '+' : '-'} INR ${t.amount}`
+      `${t.type === 'in' ? '+' : '-'} Rs.${parseFloat(t.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
     ]);
 
     // Generate Table
     autoTable(doc, {
-      startY: 30,
+      startY: startY + 5,
       head: [['Date', 'Category', 'Notes', 'Type', 'Amount']],
       body: tableData,
       theme: 'striped',
       styles: { fontSize: 9, cellPadding: 3 },
-      headStyles: { fillColor: [108, 99, 255], textColor: 255, fontStyle: 'bold' },
+      headStyles: { fillColor: [108, 99, 255], textColor: 255, fontStyle: 'bold', halign: 'center' },
       columnStyles: {
+        1: { halign: 'center' },
+        3: { halign: 'center' },
         4: { halign: 'right', fontStyle: 'bold' }
+      },
+      didParseCell: function(data) {
+        if (data.section === 'body' && data.column.index === 4) {
+          if (data.cell.raw.startsWith('+')) {
+            data.cell.styles.textColor = [0, 200, 83];
+          } else {
+            data.cell.styles.textColor = [255, 61, 0];
+          }
+        }
       }
     });
+
+    // Add Page Numbers (Footer)
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text(`Page ${i} of ${pageCount} - Finance Analyzer Report`, doc.internal.pageSize.width / 2, doc.internal.pageSize.height - 10, { align: 'center' });
+    }
 
     // Save PDF
     doc.save("Finance_Transactions_Report.pdf");
